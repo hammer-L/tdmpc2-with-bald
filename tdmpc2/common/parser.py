@@ -77,4 +77,26 @@ def parse_cfg(cfg: OmegaConf) -> OmegaConf:
 		cfg.task_dim = 0
 	cfg.tasks = TASK_SET.get(cfg.task, [cfg.task])
 
+	# Planning-only exploration
+	valid_explore_rewards = {'none', 'q_bald', 'dynamics_bald', 'noise'}
+	assert cfg.explore_reward in valid_explore_rewards, \
+		f'Invalid explore_reward {cfg.explore_reward}. Must be one of {sorted(valid_explore_rewards)}'
+	assert cfg.explore_schedule in {'constant', 'linear', 'cosine'}, \
+		'Explore schedule must be one of [constant, linear, cosine].'
+	assert cfg.explore_schedule_steps > 0, 'explore_schedule_steps must be positive.'
+	assert cfg.explore_coef_start >= cfg.explore_coef_end >= 0, \
+		'Exploration coefficients must be non-negative and decrease over time.'
+	assert cfg.q_bald_num_q > 1, 'Q-BALD requires at least two Q heads.'
+	assert 0 <= cfg.dynamics_dropout < 1, 'dynamics_dropout must be in [0, 1).'
+	assert cfg.explore_noise_std >= 0, 'explore_noise_std must be non-negative.'
+	if cfg.explore_reward == 'q_bald':
+		assert cfg.num_bins > 1, 'Q-BALD requires categorical Q outputs (num_bins > 1).'
+		assert cfg.num_q >= cfg.q_bald_num_q, \
+			f'Q-BALD requested {cfg.q_bald_num_q} Q heads, but the model only has {cfg.num_q}.'
+	if cfg.explore_reward == 'dynamics_bald':
+		assert cfg.dynamics_dropout > 0, 'Dynamics-BALD requires dynamics_dropout > 0.'
+		assert cfg.dynamics_bald_samples > 1, 'Dynamics-BALD requires at least two MC samples.'
+		assert cfg.latent_dim % cfg.simnorm_dim == 0, \
+			'latent_dim must be divisible by simnorm_dim for Dynamics-BALD.'
+
 	return cfg_to_dataclass(cfg)

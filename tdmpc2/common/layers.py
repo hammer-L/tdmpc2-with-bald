@@ -104,10 +104,10 @@ class NormedLinear(nn.Linear):
 		self.act = act
 		self.dropout = nn.Dropout(dropout, inplace=False) if dropout else None
 
-	def forward(self, x):
+	def forward(self, x, force_dropout=False):
 		x = super().forward(x)
 		if self.dropout:
-			x = self.dropout(x)
+			x = F.dropout(x, p=self.dropout.p, training=self.training or force_dropout)
 		return self.act(self.ln(x))
 
 	def __repr__(self):
@@ -131,6 +131,16 @@ def mlp(in_dim, mlp_dims, out_dim, act=None, dropout=0.):
 		mlp.append(NormedLinear(dims[i], dims[i+1], dropout=dropout*(i==0)))
 	mlp.append(NormedLinear(dims[-2], dims[-1], act=act) if act else nn.Linear(dims[-2], dims[-1]))
 	return nn.Sequential(*mlp)
+
+
+def mc_dropout_forward(module, x):
+	"""Forward an MLP while forcing its dropout layers to remain stochastic."""
+	for layer in module:
+		if isinstance(layer, NormedLinear):
+			x = layer(x, force_dropout=True)
+		else:
+			x = layer(x)
+	return x
 
 
 def conv(in_shape, num_channels, act=None):

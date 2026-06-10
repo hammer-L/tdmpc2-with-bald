@@ -3,6 +3,24 @@ import torch.nn.functional as F
 from tensordict import TensorDict
 
 
+def categorical_bald(x, from_logits=True, eps=1e-8):
+	"""
+	Compute BALD for an ensemble of categorical predictions.
+
+	Args:
+		x (torch.Tensor): Predictions with shape (ensemble, ..., classes).
+		from_logits (bool): Whether predictions are unnormalized logits.
+
+	Returns:
+		torch.Tensor: BALD values with shape (...).
+	"""
+	p = F.softmax(x, dim=-1) if from_logits else x
+	p_mean = p.mean(dim=0)
+	mean_entropy = -(p_mean * torch.log(p_mean + eps)).sum(dim=-1)
+	individual_entropy = -(p * torch.log(p + eps)).sum(dim=-1).mean(dim=0)
+	return (mean_entropy - individual_entropy).clamp_min(0)
+
+
 def soft_ce(pred, target, cfg):
 	"""Computes the cross entropy loss between predictions and soft targets."""
 	pred = F.log_softmax(pred, dim=-1)

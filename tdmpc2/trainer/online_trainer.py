@@ -14,6 +14,28 @@ class OnlineTrainer(Trainer):
 		self._step = 0
 		self._ep_idx = 0
 		self._start_time = time()
+		self._plan_metric_sums = {}
+		self._plan_metric_count = 0
+
+	def _record_plan_metrics(self):
+		"""Accumulate planning metrics for episode-level logging."""
+		if not self.agent.plan_metrics:
+			return
+		for key, value in self.agent.plan_metrics.items():
+			self._plan_metric_sums[key] = self._plan_metric_sums.get(key, 0.) + value
+		self._plan_metric_count += 1
+
+	def _consume_plan_metrics(self):
+		"""Return episode means and reset planning metric accumulators."""
+		if self._plan_metric_count == 0:
+			return {}
+		metrics = {
+			key: value / self._plan_metric_count
+			for key, value in self._plan_metric_sums.items()
+		}
+		self._plan_metric_sums = {}
+		self._plan_metric_count = 0
+		return metrics
 
 	def common_metrics(self):
 		"""Return a dictionary of current metrics."""
@@ -96,6 +118,7 @@ class OnlineTrainer(Trainer):
 						episode_success=info['success'],
 						episode_length=len(self._tds),
 						episode_terminated=info['terminated'])
+					train_metrics.update(self._consume_plan_metrics())
 					train_metrics.update(self.common_metrics())
 					self.logger.log(train_metrics, 'train')
 					self._ep_idx = self.buffer.add(torch.cat(self._tds))
@@ -105,7 +128,9 @@ class OnlineTrainer(Trainer):
 
 			# Collect experience
 			if self._step > self.cfg.seed_steps:
-				action = self.agent.act(obs, t0=len(self._tds)==1)
+				explore_step = self._step - self.cfg.seed_steps
+				action = self.agent.act(obs, t0=len(self._tds)==1, step=explore_step)
+				self._record_plan_metrics()
 			else:
 				action = self.env.rand_act()
 			obs, reward, done, info = self.env.step(action)

@@ -41,6 +41,18 @@ min_std: 0.05
 max_std: 2
 temperature: 0.5
 
+# planning exploration
+explore_reward: none # none, q_bald, dynamics_bald, or noise
+explore_coef_start: 1.0
+explore_coef_end: 0.0
+explore_schedule: linear # constant, linear, or cosine
+explore_schedule_start: 0
+explore_schedule_steps: 1_000_000
+q_bald_num_q: 5
+dynamics_dropout: 0.1
+dynamics_bald_samples: 5
+explore_noise_std: 1.0
+
 # actor
 log_std_min: -10
 log_std_max: 2

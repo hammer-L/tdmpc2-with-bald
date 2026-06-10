@@ -1,3 +1,5 @@
+import math as py_math
+
 import torch
 import torch.nn.functional as F
 
@@ -32,6 +34,7 @@ class TDMPC2(torch.nn.Module):
 		self.pi_optim = torch.optim.Adam(self.model._pi.parameters(), lr=self.cfg.lr, eps=1e-5, capturable=True)
 		self.model.eval()
 		self.scale = RunningScale(cfg)
+		self._last_plan_metrics = {}
 		self.cfg.iterations += 2*int(cfg.action_dim >= 20) # Heuristic for large action spaces
 		self.discount = torch.tensor(
 			[self._get_discount(ep_len) for ep_len in cfg.episode_lengths], device='cuda:0'
@@ -48,7 +51,7 @@ class TDMPC2(torch.nn.Module):
 		_plan_val = getattr(self, "_plan_val", None)
 		if _plan_val is not None:
 			return _plan_val
-		if self.cfg.compile:
+		if self.cfg.compile and self.cfg.explore_reward != 'dynamics_bald':
 			plan = torch.compile(self._plan, mode="reduce-overhead")
 		else:
 			plan = self._plan
@@ -69,6 +72,25 @@ class TDMPC2(torch.nn.Module):
 		"""
 		frac = episode_length/self.cfg.discount_denom
 		return min(max((frac-1)/(frac), self.cfg.discount_min), self.cfg.discount_max)
+
+	def _explore_coefficient(self, step):
+		"""Return the planning-only exploration coefficient at an environment step."""
+		if self.cfg.explore_reward == 'none':
+			return 0.
+		if self.cfg.explore_schedule == 'constant':
+			return self.cfg.explore_coef_start
+		progress = (step - self.cfg.explore_schedule_start) / self.cfg.explore_schedule_steps
+		progress = min(max(progress, 0.), 1.)
+		if self.cfg.explore_schedule == 'cosine':
+			progress = 0.5 * (1 - py_math.cos(py_math.pi * progress))
+		return self.cfg.explore_coef_start + progress * (
+			self.cfg.explore_coef_end - self.cfg.explore_coef_start
+		)
+
+	@property
+	def plan_metrics(self):
+		"""Statistics from the most recent exploratory planning call."""
+		return self._last_plan_metrics
 
 	def save(self, fp):
 		"""
@@ -96,7 +118,7 @@ class TDMPC2(torch.nn.Module):
 		return
 
 	@torch.no_grad()
-	def act(self, obs, t0=False, eval_mode=False, task=None):
+	def act(self, obs, t0=False, eval_mode=False, task=None, step=None):
 		"""
 		Select an action by planning in the latent space of the world model.
 
@@ -105,6 +127,7 @@ class TDMPC2(torch.nn.Module):
 			t0 (bool): Whether this is the first observation in the episode.
 			eval_mode (bool): Whether to use the mean of the action distribution.
 			task (int): Task index (only used for multi-task experiments).
+			step (int): Environment step used by the exploration schedule.
 
 		Returns:
 			torch.Tensor: Action to take in the environment.
@@ -112,8 +135,33 @@ class TDMPC2(torch.nn.Module):
 		obs = obs.to(self.device, non_blocking=True).unsqueeze(0)
 		if task is not None:
 			task = torch.tensor([task], device=self.device)
+		self._last_plan_metrics = {}
 		if self.cfg.mpc:
-			return self.plan(obs, t0=t0, eval_mode=eval_mode, task=task).cpu()
+			explore = not eval_mode and self.cfg.explore_reward != 'none'
+			coef = self._explore_coefficient(0 if step is None else step) if explore else 0.
+			action, plan_stats = self.plan(
+				obs,
+				t0=t0,
+				eval_mode=eval_mode,
+				task=task,
+				explore=explore,
+				explore_coef=torch.tensor(coef, device=self.device),
+			)
+			if explore:
+				reward_name = self.cfg.explore_reward
+				self._last_plan_metrics = {
+					'explore_coefficient': coef,
+					'planning_task_value_mean': plan_stats[0].item(),
+					'explore_reward_mean': plan_stats[1].item(),
+					'explore_reward_std': plan_stats[2].item(),
+					'explore_reward_max': plan_stats[3].item(),
+					f'{reward_name}_mean': plan_stats[1].item(),
+					f'{reward_name}_std': plan_stats[2].item(),
+					f'{reward_name}_max': plan_stats[3].item(),
+					'explore_bonus_mean': plan_stats[4].item(),
+					'planning_total_value_mean': plan_stats[5].item(),
+				}
+			return action.cpu()
 		z = self.model.encode(obs, task)
 		action, info = self.model.pi(z, task)
 		if eval_mode:
@@ -121,23 +169,65 @@ class TDMPC2(torch.nn.Module):
 		return action[0].cpu()
 
 	@torch.no_grad()
-	def _estimate_value(self, z, actions, task):
+	def _exploration_reward(self, z, action, task):
+		"""Compute a planning-only exploration reward for state-action pairs."""
+		if self.cfg.explore_reward == 'q_bald':
+			q_logits = self.model.Q(z, action, task, return_type='all')
+			q_logits = q_logits[:self.cfg.q_bald_num_q]
+			return math.categorical_bald(q_logits).unsqueeze(-1)
+		if self.cfg.explore_reward == 'dynamics_bald':
+			next_z = self.model.next_mc(
+				z, action, task, self.cfg.dynamics_bald_samples
+			)
+			p = next_z.reshape(
+				self.cfg.dynamics_bald_samples,
+				next_z.shape[1],
+				-1,
+				self.cfg.simnorm_dim,
+			)
+			return math.categorical_bald(p, from_logits=False).mean(-1, keepdim=True)
+		if self.cfg.explore_reward == 'noise':
+			return self.cfg.explore_noise_std * torch.randn(
+				z.shape[0], 1, device=z.device, dtype=z.dtype
+			)
+		return torch.zeros(z.shape[0], 1, device=z.device, dtype=z.dtype)
+
+	@torch.no_grad()
+	def _estimate_value(self, z, actions, task, explore, explore_coef):
 		"""Estimate value of a trajectory starting at latent state z and executing given actions."""
-		G, discount = 0, 1
+		task_return, explore_return, discount = 0, 0, 1
+		explore_rewards = []
 		termination = torch.zeros(self.cfg.num_samples, 1, dtype=torch.float32, device=z.device)
 		for t in range(self.cfg.horizon):
 			reward = math.two_hot_inv(self.model.reward(z, actions[t], task), self.cfg)
+			explore_reward = self._exploration_reward(z, actions[t], task) if explore \
+				else torch.zeros_like(reward)
+			explore_rewards.append(explore_reward)
+			task_return = task_return + discount * (1-termination) * reward
+			explore_return = explore_return + discount * (1-termination) * explore_reward
 			z = self.model.next(z, actions[t], task)
-			G = G + discount * (1-termination) * reward
 			discount_update = self.discount[torch.tensor(task)] if self.cfg.multitask else self.discount
 			discount = discount * discount_update
 			if self.cfg.episodic:
 				termination = torch.clip(termination + (self.model.termination(z, task) > 0.5).float(), max=1.)
 		action, _ = self.model.pi(z, task)
-		return G + discount * (1-termination) * self.model.Q(z, action, task, return_type='avg')
+		task_value = task_return + discount * (1-termination) * self.model.Q(
+			z, action, task, return_type='avg'
+		)
+		total_value = task_value + explore_coef * explore_return
+		explore_rewards = torch.stack(explore_rewards)
+		stats = torch.stack([
+			task_value.mean(),
+			explore_rewards.mean(),
+			explore_rewards.std(unbiased=False),
+			explore_rewards.max(),
+			(explore_coef * explore_return).mean(),
+			total_value.mean(),
+		])
+		return total_value, stats
 
 	@torch.no_grad()
-	def _plan(self, obs, t0=False, eval_mode=False, task=None):
+	def _plan(self, obs, t0=False, eval_mode=False, task=None, explore=False, explore_coef=0.):
 		"""
 		Plan a sequence of actions using the learned world model.
 
@@ -182,7 +272,10 @@ class TDMPC2(torch.nn.Module):
 				actions = actions * self.model._action_masks[task]
 
 			# Compute elite actions
-			value = self._estimate_value(z, actions, task).nan_to_num(0)
+			value, plan_stats = self._estimate_value(
+				z, actions, task, explore, explore_coef
+			)
+			value = value.nan_to_num(0)
 			elite_idxs = torch.topk(value.squeeze(1), self.cfg.num_elites, dim=0).indices
 			elite_value, elite_actions = value[elite_idxs], actions[:, elite_idxs]
 
@@ -204,7 +297,7 @@ class TDMPC2(torch.nn.Module):
 		if not eval_mode:
 			a = a + std * torch.randn(self.cfg.action_dim, device=std.device)
 		self._prev_mean.copy_(mean)
-		return a.clamp(-1, 1)
+		return a.clamp(-1, 1), plan_stats
 
 	def update_pi(self, zs, task):
 		"""

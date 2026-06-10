@@ -23,7 +23,13 @@ class WorldModel(nn.Module):
 			for i in range(len(cfg.tasks)):
 				self._action_masks[i, :cfg.action_dims[i]] = 1.
 		self._encoder = layers.enc(cfg)
-		self._dynamics = layers.mlp(cfg.latent_dim + cfg.action_dim + cfg.task_dim, 2*[cfg.mlp_dim], cfg.latent_dim, act=layers.SimNorm(cfg))
+		self._dynamics = layers.mlp(
+			cfg.latent_dim + cfg.action_dim + cfg.task_dim,
+			2*[cfg.mlp_dim],
+			cfg.latent_dim,
+			act=layers.SimNorm(cfg),
+			dropout=cfg.dynamics_dropout if cfg.explore_reward == 'dynamics_bald' else 0.,
+		)
 		self._reward = layers.mlp(cfg.latent_dim + cfg.action_dim + cfg.task_dim, 2*[cfg.mlp_dim], max(cfg.num_bins, 1))
 		self._termination = layers.mlp(cfg.latent_dim + cfg.task_dim, 2*[cfg.mlp_dim], 1) if cfg.episodic else None
 		self._pi = layers.mlp(cfg.latent_dim + cfg.task_dim, 2*[cfg.mlp_dim], 2*cfg.action_dim)
@@ -119,6 +125,19 @@ class WorldModel(nn.Module):
 			z = self.task_emb(z, task)
 		z = torch.cat([z, a], dim=-1)
 		return self._dynamics(z)
+
+	def next_mc(self, z, a, task, samples):
+		"""
+		Predict next latent states with MC dropout enabled.
+		Dropout is forced only for these planning-time samples.
+		"""
+		if self.cfg.multitask:
+			z = self.task_emb(z, task)
+		z = torch.cat([z, a], dim=-1)
+		return torch.stack([
+			layers.mc_dropout_forward(self._dynamics, z)
+			for _ in range(samples)
+		])
 
 	def reward(self, z, a, task):
 		"""

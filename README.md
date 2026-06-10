@@ -120,6 +120,18 @@ $ python train.py task=walker-walk obs=rgb
 
 We recommend using default hyperparameters for single-task online RL, including the default model size of 5M parameters (`model_size=5`). Multi-task offline RL benefits from a larger model size, but larger models are also increasingly costly to train and evaluate. Available arguments are `model_size={1, 5, 19, 48, 317}`. See `config.yaml` for a full list of arguments.
 
+### Planning-only exploration rewards
+
+Online MPPI planning can optionally add an exploration reward without changing the Q targets or reward-model targets. The available comparison modes are:
+
+```
+$ python train.py task=dog-run model_size=5 explore_reward=q_bald
+$ python train.py task=dog-run model_size=5 explore_reward=dynamics_bald
+$ python train.py task=dog-run model_size=5 explore_reward=noise
+```
+
+`q_bald` computes BALD from five categorical Q heads. `dynamics_bald` uses MC dropout samples of the SimNorm dynamics output, and `noise` is a random-reward baseline. After seed collection, the default linear coefficient schedule decreases from `explore_coef_start=1.0` to `explore_coef_end=0.0` over `explore_schedule_steps=1000000`; `constant` and `cosine` schedules are also supported. Exploration is disabled during evaluation. Planning statistics and the current coefficient are logged with the existing train metrics in wandb.
+
 ----
 
 ## Citation
