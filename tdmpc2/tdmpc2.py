@@ -1,9 +1,8 @@
-import math as py_math
-
 import torch
 import torch.nn.functional as F
 
 from common import math
+from common.exploration import exploration_coefficient, schedule_progress
 from common.scale import RunningScale
 from common.world_model import WorldModel
 from common.layers import api_model_conversion
@@ -77,14 +76,13 @@ class TDMPC2(torch.nn.Module):
 		"""Return the planning-only exploration coefficient at an environment step."""
 		if self.cfg.explore_reward == 'none':
 			return 0.
-		if self.cfg.explore_schedule == 'constant':
-			return self.cfg.explore_coef_start
-		progress = (step - self.cfg.explore_schedule_start) / self.cfg.explore_schedule_steps
-		progress = min(max(progress, 0.), 1.)
-		if self.cfg.explore_schedule == 'cosine':
-			progress = 0.5 * (1 - py_math.cos(py_math.pi * progress))
-		return self.cfg.explore_coef_start + progress * (
-			self.cfg.explore_coef_end - self.cfg.explore_coef_start
+		return exploration_coefficient(
+			step=step,
+			schedule=self.cfg.explore_schedule,
+			peak=self.cfg.explore_coef_peak,
+			start=self.cfg.explore_schedule_start,
+			steps=self.cfg.explore_schedule_steps,
+			peak_fraction=self.cfg.explore_peak_fraction,
 		)
 
 	@property
@@ -138,7 +136,8 @@ class TDMPC2(torch.nn.Module):
 		self._last_plan_metrics = {}
 		if self.cfg.mpc:
 			explore = not eval_mode and self.cfg.explore_reward != 'none'
-			coef = self._explore_coefficient(0 if step is None else step) if explore else 0.
+			explore_step = 0 if step is None else step
+			coef = self._explore_coefficient(explore_step) if explore else 0.
 			action, plan_stats = self.plan(
 				obs,
 				t0=t0,
@@ -151,6 +150,11 @@ class TDMPC2(torch.nn.Module):
 				reward_name = self.cfg.explore_reward
 				self._last_plan_metrics = {
 					'explore_coefficient': coef,
+					'explore_schedule_progress': schedule_progress(
+						explore_step,
+						self.cfg.explore_schedule_start,
+						self.cfg.explore_schedule_steps,
+					),
 					'planning_task_value_mean': plan_stats[0].item(),
 					'explore_reward_mean': plan_stats[1].item(),
 					'explore_reward_std': plan_stats[2].item(),
@@ -158,8 +162,10 @@ class TDMPC2(torch.nn.Module):
 					f'{reward_name}_mean': plan_stats[1].item(),
 					f'{reward_name}_std': plan_stats[2].item(),
 					f'{reward_name}_max': plan_stats[3].item(),
-					'explore_bonus_mean': plan_stats[4].item(),
-					'planning_total_value_mean': plan_stats[5].item(),
+					'explore_return_mean': plan_stats[4].item(),
+					'explore_bonus_mean': plan_stats[5].item(),
+					'explore_bonus_task_ratio': plan_stats[6].item(),
+					'planning_total_value_mean': plan_stats[7].item(),
 				}
 			return action.cpu()
 		z = self.model.encode(obs, task)
@@ -214,14 +220,17 @@ class TDMPC2(torch.nn.Module):
 		task_value = task_return + discount * (1-termination) * self.model.Q(
 			z, action, task, return_type='avg'
 		)
-		total_value = task_value + explore_coef * explore_return
+		explore_bonus = explore_coef * explore_return
+		total_value = task_value + explore_bonus
 		explore_rewards = torch.stack(explore_rewards)
 		stats = torch.stack([
 			task_value.mean(),
 			explore_rewards.mean(),
 			explore_rewards.std(unbiased=False),
 			explore_rewards.max(),
-			(explore_coef * explore_return).mean(),
+			explore_return.mean(),
+			explore_bonus.mean(),
+			explore_bonus.abs().mean() / (task_value.abs().mean() + 1e-8),
 			total_value.mean(),
 		])
 		return total_value, stats

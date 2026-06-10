@@ -16,6 +16,9 @@ class OnlineTrainer(Trainer):
 		self._start_time = time()
 		self._plan_metric_sums = {}
 		self._plan_metric_count = 0
+		self._eval_reward_auc = 0.
+		self._last_eval_step = None
+		self._last_eval_reward = None
 
 	def _record_plan_metrics(self):
 		"""Accumulate planning metrics for episode-level logging."""
@@ -47,9 +50,29 @@ class OnlineTrainer(Trainer):
 			steps_per_second=self._step / elapsed_time
 		)
 
+	def _environment_metrics(self, info):
+		"""Extract scalar environment diagnostics from an episode's final info."""
+		metrics = {}
+		for key, value in info.items():
+			if not key.startswith('metric_'):
+				continue
+			if torch.is_tensor(value):
+				value = value.item()
+			metrics[key] = float(value)
+		return metrics
+
+	def _update_eval_reward_auc(self, reward):
+		"""Update trapezoidal area under the evaluation reward curve."""
+		if self._last_eval_step is not None:
+			step_delta = self._step - self._last_eval_step
+			self._eval_reward_auc += 0.5 * (self._last_eval_reward + reward) * step_delta
+		self._last_eval_step = self._step
+		self._last_eval_reward = reward
+		return self._eval_reward_auc
+
 	def eval(self):
 		"""Evaluate a TD-MPC2 agent."""
-		ep_rewards, ep_successes, ep_lengths = [], [], []
+		ep_rewards, ep_successes, ep_lengths, env_metrics = [], [], [], {}
 		for i in range(self.cfg.eval_episodes):
 			obs, done, ep_reward, t = self.env.reset(), False, 0, 0
 			if self.cfg.save_video:
@@ -65,13 +88,17 @@ class OnlineTrainer(Trainer):
 			ep_rewards.append(ep_reward)
 			ep_successes.append(info['success'])
 			ep_lengths.append(t)
+			for key, value in self._environment_metrics(info).items():
+				env_metrics.setdefault(key, []).append(value)
 			if self.cfg.save_video:
 				self.logger.video.save(self._step)
-		return dict(
+		metrics = dict(
 			episode_reward=np.nanmean(ep_rewards),
 			episode_success=np.nanmean(ep_successes),
 			episode_length= np.nanmean(ep_lengths),
 		)
+		metrics.update({key: np.nanmean(values) for key, values in env_metrics.items()})
+		return metrics
 
 	def to_td(self, obs, action=None, reward=None, terminated=None):
 		"""Creates a TensorDict for a new episode."""
@@ -105,6 +132,9 @@ class OnlineTrainer(Trainer):
 			if done:
 				if eval_next:
 					eval_metrics = self.eval()
+					eval_metrics['episode_reward_auc'] = self._update_eval_reward_auc(
+						eval_metrics['episode_reward']
+					)
 					eval_metrics.update(self.common_metrics())
 					self.logger.log(eval_metrics, 'eval')
 					eval_next = False
@@ -118,6 +148,7 @@ class OnlineTrainer(Trainer):
 						episode_success=info['success'],
 						episode_length=len(self._tds),
 						episode_terminated=info['terminated'])
+					train_metrics.update(self._environment_metrics(info))
 					train_metrics.update(self._consume_plan_metrics())
 					train_metrics.update(self.common_metrics())
 					self.logger.log(train_metrics, 'train')
@@ -128,7 +159,7 @@ class OnlineTrainer(Trainer):
 
 			# Collect experience
 			if self._step > self.cfg.seed_steps:
-				explore_step = self._step - self.cfg.seed_steps
+				explore_step = self._step - self.cfg.seed_steps - 1
 				action = self.agent.act(obs, t0=len(self._tds)==1, step=explore_step)
 				self._record_plan_metrics()
 			else:

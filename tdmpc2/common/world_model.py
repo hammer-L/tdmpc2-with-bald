@@ -28,7 +28,7 @@ class WorldModel(nn.Module):
 			2*[cfg.mlp_dim],
 			cfg.latent_dim,
 			act=layers.SimNorm(cfg),
-			dropout=cfg.dynamics_dropout if cfg.explore_reward == 'dynamics_bald' else 0.,
+			dropout=cfg.dynamics_dropout,
 		)
 		self._reward = layers.mlp(cfg.latent_dim + cfg.action_dim + cfg.task_dim, 2*[cfg.mlp_dim], max(cfg.num_bins, 1))
 		self._termination = layers.mlp(cfg.latent_dim + cfg.task_dim, 2*[cfg.mlp_dim], 1) if cfg.episodic else None

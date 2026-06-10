@@ -85,6 +85,9 @@ This codebase provides support for all **104** continuous control tasks from **D
 | maniskill | pick-ycb
 | myosuite  | myo-key-turn
 | myosuite  | myo-key-turn-hard
+| gymnasium | mountaincar-continuous
+| toy | toy-bimodal
+| toy | toy-bimodal-dynamics
 
 which can be run by specifying the `task` argument for `evaluation.py`. Multi-task training and evaluation is specified by setting `task=mt80` or `task=mt30` for the 80-task and 30-task sets, respectively. While you generally do not need to access the underlying task IDs or embeddings during training or evaluation of our multi-task models, the mapping from task name to task embedding used in our work can be found [here](https://github.com/nicklashansen/tdmpc2/blob/7ec6bc83a82a5188ca3faddc59aea83f430ab570/tdmpc2/common/__init__.py#L26). As of April 2025, our codebase also provides basic support for other MuJoCo/Box2d Gymnasium tasks; refer to the `envs` directory for a list of tasks. It should be relatively straightforward to add support for custom tasks by following the examples in `envs`.
 
@@ -125,12 +128,39 @@ We recommend using default hyperparameters for single-task online RL, including 
 Online MPPI planning can optionally add an exploration reward without changing the Q targets or reward-model targets. The available comparison modes are:
 
 ```
-$ python train.py task=dog-run model_size=5 explore_reward=q_bald
-$ python train.py task=dog-run model_size=5 explore_reward=dynamics_bald
-$ python train.py task=dog-run model_size=5 explore_reward=noise
+$ python train.py task=dog-run model_size=5 explore_reward=q_bald explore_coef_peak=1
+$ python train.py task=dog-run model_size=5 explore_reward=dynamics_bald explore_coef_peak=1
+$ python train.py task=dog-run model_size=5 explore_reward=noise explore_coef_peak=1
 ```
 
-`q_bald` computes BALD from five categorical Q heads. `dynamics_bald` uses MC dropout samples of the SimNorm dynamics output, and `noise` is a random-reward baseline. After seed collection, the default linear coefficient schedule decreases from `explore_coef_start=1.0` to `explore_coef_end=0.0` over `explore_schedule_steps=1000000`; `constant` and `cosine` schedules are also supported. Exploration is disabled during evaluation. Planning statistics and the current coefficient are logged with the existing train metrics in wandb.
+`q_bald` computes BALD from five categorical Q heads. `dynamics_bald` uses MC dropout samples of the SimNorm dynamics output, and `noise` is a random-reward baseline. Exploration changes only MPPI trajectory ranking; replay rewards, TD targets, Q losses, and reward-model losses remain unchanged.
+
+The default `triangular` schedule starts at zero after seed collection, reaches `explore_coef_peak` at `explore_peak_fraction=0.2`, and returns to zero at `explore_schedule_steps`. `constant` and `linear_decay` are available as schedule ablations. Exploration is always disabled during evaluation. Dynamics dropout is independent of the selected exploration reward so all comparison groups can use the same world-model architecture.
+
+Two dependency-free diagnostics are included:
+
+- `toy-bimodal`: linear dynamics with an easy broad local reward and a distant narrow global reward, intended for Q-BALD.
+- `toy-bimodal-dynamics`: the same reward landscape with deterministic nonlinear dynamics in the initially unvisited region, intended for dynamics-BALD.
+
+Run coefficient calibration, the complete 3-seed toy matrix, or standard-environment confirmation with:
+
+```
+$ python scripts/run_exploration_experiments.py --phase calibration --dry-run
+$ python scripts/run_exploration_experiments.py --phase toy --q-peak 1 --dynamics-peak 1 --noise-peak 1
+$ python scripts/run_exploration_experiments.py --phase confirm --method q_bald --q-peak 1
+```
+
+Remove `--dry-run` to execute calibration. Each method has its own peak argument because raw Q-BALD, dynamics-BALD, and noise are deliberately not normalized. Calibration tests `0.5x`, `1x`, and `2x` of the supplied peak. The toy matrix uses 30k steps and seeds 1, 2, and 3. Confirmation covers `MountainCarContinuous-v0` through `task=mountaincar-continuous episodic=true` and the existing `cartpole-swingup-sparse` task.
+
+Use `train/explore_bonus_task_ratio` during calibration and prefer a peak whose ratio is approximately `0.2` near the schedule maximum. Wandb also logs the raw exploration reward and return, weighted bonus, coefficient, schedule progress, `eval/episode_reward_auc`, and environment diagnostics such as global-goal success and state coverage. Useful keys include `train/explore_coefficient`, `train/explore_return_mean`, `train/metric_global_reached`, and their `eval/` counterparts.
+
+Run the regression tests inside the TD-MPC2 conda environment with:
+
+```
+$ python -m unittest discover -s tests -v
+```
+
+Treat the pilot as promising only if triangular scheduling keeps early reward within 10% of the no-exploration baseline, beats both `none` and `noise` on global-goal success in at least two of three seeds, and retains its return in the final 20% after the coefficient has decayed. On `toy-bimodal-dynamics`, compare every method with the same `dynamics_dropout=0.1` baseline.
 
 ----
 

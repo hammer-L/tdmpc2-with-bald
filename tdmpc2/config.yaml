@@ -43,11 +43,11 @@ temperature: 0.5
 
 # planning exploration
 explore_reward: none # none, q_bald, dynamics_bald, or noise
-explore_coef_start: 1.0
-explore_coef_end: 0.0
-explore_schedule: linear # constant, linear, or cosine
+explore_schedule: triangular # triangular, constant, or linear_decay
+explore_coef_peak: 1.0
 explore_schedule_start: 0
-explore_schedule_steps: 1_000_000
+explore_schedule_steps: 20_000
+explore_peak_fraction: 0.2
 q_bald_num_q: 5
 dynamics_dropout: 0.1
 dynamics_bald_samples: 5

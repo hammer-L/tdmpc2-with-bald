@@ -81,11 +81,12 @@ def parse_cfg(cfg: OmegaConf) -> OmegaConf:
 	valid_explore_rewards = {'none', 'q_bald', 'dynamics_bald', 'noise'}
 	assert cfg.explore_reward in valid_explore_rewards, \
 		f'Invalid explore_reward {cfg.explore_reward}. Must be one of {sorted(valid_explore_rewards)}'
-	assert cfg.explore_schedule in {'constant', 'linear', 'cosine'}, \
-		'Explore schedule must be one of [constant, linear, cosine].'
+	assert cfg.explore_schedule in {'triangular', 'constant', 'linear_decay'}, \
+		'Explore schedule must be one of [triangular, constant, linear_decay].'
+	assert cfg.explore_schedule_start >= 0, 'explore_schedule_start must be non-negative.'
 	assert cfg.explore_schedule_steps > 0, 'explore_schedule_steps must be positive.'
-	assert cfg.explore_coef_start >= cfg.explore_coef_end >= 0, \
-		'Exploration coefficients must be non-negative and decrease over time.'
+	assert cfg.explore_coef_peak >= 0, 'explore_coef_peak must be non-negative.'
+	assert 0 < cfg.explore_peak_fraction < 1, 'explore_peak_fraction must be in (0, 1).'
 	assert cfg.q_bald_num_q > 1, 'Q-BALD requires at least two Q heads.'
 	assert 0 <= cfg.dynamics_dropout < 1, 'dynamics_dropout must be in [0, 1).'
 	assert cfg.explore_noise_std >= 0, 'explore_noise_std must be non-negative.'
