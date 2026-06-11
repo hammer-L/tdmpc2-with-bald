@@ -1,0 +1,5 @@
+- task=toy-bimodal
+- model_size=1
+- steps=30000
+- explore_reward=none
+- exp_name=none
