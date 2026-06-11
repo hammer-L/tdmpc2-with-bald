@@ -90,6 +90,18 @@ def parse_cfg(cfg: OmegaConf) -> OmegaConf:
 	assert cfg.q_bald_num_q > 1, 'Q-BALD requires at least two Q heads.'
 	assert 0 <= cfg.dynamics_dropout < 1, 'dynamics_dropout must be in [0, 1).'
 	assert cfg.explore_noise_std >= 0, 'explore_noise_std must be non-negative.'
+	assert isinstance(cfg.plan_log_freq, int) and cfg.plan_log_freq > 0, \
+		'plan_log_freq must be a positive integer.'
+	assert cfg.plan_alignment_target >= 0, 'plan_alignment_target must be non-negative.'
+	if cfg.bald_diagnostics:
+		assert cfg.num_q >= cfg.q_bald_num_q > 1, \
+			'BALD diagnostics require num_q >= q_bald_num_q > 1.'
+		assert cfg.num_bins > 1, \
+			'Q-BALD diagnostics require categorical Q outputs (num_bins > 1).'
+		assert cfg.dynamics_bald_samples > 1, \
+			'Dynamics-BALD diagnostics require at least two MC samples.'
+		assert cfg.latent_dim % cfg.simnorm_dim == 0, \
+			'latent_dim must be divisible by simnorm_dim for Dynamics-BALD diagnostics.'
 	if cfg.explore_reward == 'q_bald':
 		assert cfg.num_bins > 1, 'Q-BALD requires categorical Q outputs (num_bins > 1).'
 		assert cfg.num_q >= cfg.q_bald_num_q, \

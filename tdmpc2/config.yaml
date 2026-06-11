@@ -52,6 +52,9 @@ q_bald_num_q: 5
 dynamics_dropout: 0.1
 dynamics_bald_samples: 5
 explore_noise_std: 1.0
+bald_diagnostics: true
+plan_log_freq: 10
+plan_alignment_target: 0.2
 
 # actor
 log_std_min: -10

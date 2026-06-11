@@ -10,8 +10,9 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tdmpc2'))
 
 try:
-	from common.logger import VideoRecorder
+	from common.logger import Logger, VideoRecorder
 except ImportError:
+	Logger = None
 	VideoRecorder = None
 
 
@@ -66,6 +67,18 @@ class VideoRecorderTest(unittest.TestCase):
 			recorder.init(env, enabled=False)
 			recorder.record(env)
 		self.assertEqual(env.render_calls, 0)
+
+
+@unittest.skipIf(Logger is None, 'logger dependencies are not installed')
+class PlanLoggerTest(unittest.TestCase):
+
+	def test_plan_log_uses_global_step_without_console_or_csv(self):
+		logger = object.__new__(Logger)
+		logger._wandb = FakeWandb()
+		logger.log_plan({'elite_task_return_mean': 3.5}, step=20)
+		payload, step = logger._wandb.log_calls[0]
+		self.assertEqual(step, 20)
+		self.assertEqual(payload, {'plan/elite_task_return_mean': 3.5})
 
 
 if __name__ == '__main__':

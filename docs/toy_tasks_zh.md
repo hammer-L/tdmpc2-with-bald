@@ -263,7 +263,28 @@ save_video: false
 - `train/explore_bonus_task_ratio`：探索 bonus 与 task value 的相对尺度。
 - `train/q_bald_mean` 或 `train/dynamics_bald_mean`：具体不确定性指标。
 
-评估调用中探索 coefficient 恒为 0，因此 `eval/episode_reward` 反映环境奖励策略，而不是 BALD bonus。
+逐 planning 诊断默认配置：
+
+```yaml
+bald_diagnostics: true
+plan_log_freq: 10
+plan_alignment_target: 0.2
+```
+
+无论 `explore_reward` 使用 `none`、`q_bald`、`dynamics_bald` 还是 `noise`，每 10 次 planning 都会在最终 elite trajectories 上记录：
+
+- `plan/elite_model_reward_return_mean`：规划窗口内 reward model 的折扣回报。
+- `plan/elite_terminal_q_mean`：规划窗口末端的折扣 Q。
+- `plan/elite_task_return_mean`：前两者之和，是 coefficient 的主要尺度基准。
+- `plan/q_bald_return_mean`：Q-BALD 在规划窗口内的折扣累计值。
+- `plan/dynamics_bald_return_mean`：dynamics-BALD 的折扣累计值。
+- `plan/active_explore_bonus_task_ratio`：当前实际探索 bonus 与 elite task return 的比例。
+- `plan/suggested_q_bald_coefficient`：使 Q-BALD bonus 约为 task return 20% 的建议系数。
+- `plan/suggested_dynamics_bald_coefficient`：对应 dynamics-BALD 的建议系数。
+
+建议系数由 `plan_alignment_target` 控制；BALD return 接近 0 时记录为 `NaN`。这些诊断在动作选定后计算，并恢复计算前的随机数状态，因此不会改变 MPPI 采样结果。
+
+`train/*` 会给出 episode 级均值，`eval/*` 会给出周期评估均值。评估调用中探索 coefficient 恒为 0，但仍计算双 BALD，因此 `eval/episode_reward` 反映环境奖励策略，同时可以观察确定性评估策略的不确定性。
 
 ## 8. 从 checkpoint 生成本地 MP4
 

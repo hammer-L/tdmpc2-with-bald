@@ -154,7 +154,9 @@ $ python scripts/run_exploration_experiments.py --phase confirm --method q_bald 
 
 Remove `--dry-run` to execute calibration. Each method has its own peak argument because raw Q-BALD, dynamics-BALD, and noise are deliberately not normalized. Calibration tests `0.5x`, `1x`, and `2x` of the supplied peak. The toy matrix uses 30k steps and seeds 1, 2, and 3. Confirmation covers `MountainCarContinuous-v0` through `task=mountaincar-continuous episodic=true` and the existing `cartpole-swingup-sparse` task.
 
-Use `train/explore_bonus_task_ratio` during calibration and prefer a peak whose ratio is approximately `0.2` near the schedule maximum. Wandb also logs the raw exploration reward and return, weighted bonus, coefficient, schedule progress, `eval/episode_reward_auc`, and environment diagnostics such as global-goal success and state coverage. Useful keys include `train/explore_coefficient`, `train/explore_return_mean`, `train/metric_global_reached`, and their `eval/` counterparts.
+Planning diagnostics are enabled by default with `bald_diagnostics=true` and sampled every `plan_log_freq=10` planning calls. They measure Q-BALD, dynamics-BALD, model-reward return, terminal Q, and total elite return even when `explore_reward=none`; the diagnostics never alter MPPI ranking or learning targets. Use `plan/elite_task_return_mean`, `plan/q_bald_return_mean`, and `plan/dynamics_bald_return_mean` to compare scales. `plan/suggested_q_bald_coefficient` and `plan/suggested_dynamics_bald_coefficient` target the configured `plan_alignment_target=0.2`.
+
+Episode-level `train/*` and evaluation-level `eval/*` summaries remain available alongside `eval/episode_reward_auc` and environment diagnostics such as global-goal success and state coverage. Existing exploration metrics such as `train/explore_bonus_task_ratio` and `train/explore_return_mean` are retained for compatibility.
 
 Run the regression tests inside the TD-MPC2 conda environment with:
 

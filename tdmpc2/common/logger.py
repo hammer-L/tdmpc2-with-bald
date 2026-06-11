@@ -239,3 +239,11 @@ class Logger:
 				self._log_dir / "eval.csv", header=keys, index=None
 			)
 		self._print(d, category)
+
+	def log_plan(self, d, step):
+		"""Log sampled per-plan diagnostics without console or CSV output."""
+		if self._wandb:
+			self._wandb.log(
+				{f'plan/{key}': value for key, value in d.items()},
+				step=step,
+			)

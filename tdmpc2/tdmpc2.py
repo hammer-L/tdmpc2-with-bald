@@ -87,7 +87,7 @@ class TDMPC2(torch.nn.Module):
 
 	@property
 	def plan_metrics(self):
-		"""Statistics from the most recent exploratory planning call."""
+		"""Statistics from the most recent planning call."""
 		return self._last_plan_metrics
 
 	def save(self, fp):
@@ -116,7 +116,7 @@ class TDMPC2(torch.nn.Module):
 		return
 
 	@torch.no_grad()
-	def act(self, obs, t0=False, eval_mode=False, task=None, step=None):
+	def act(self, obs, t0=False, eval_mode=False, task=None, step=None, diagnostics=False):
 		"""
 		Select an action by planning in the latent space of the world model.
 
@@ -126,6 +126,7 @@ class TDMPC2(torch.nn.Module):
 			eval_mode (bool): Whether to use the mean of the action distribution.
 			task (int): Task index (only used for multi-task experiments).
 			step (int): Environment step used by the exploration schedule.
+			diagnostics (bool): Whether to compute full elite planning diagnostics.
 
 		Returns:
 			torch.Tensor: Action to take in the environment.
@@ -138,7 +139,7 @@ class TDMPC2(torch.nn.Module):
 			explore = not eval_mode and self.cfg.explore_reward != 'none'
 			explore_step = 0 if step is None else step
 			coef = self._explore_coefficient(explore_step) if explore else 0.
-			action, plan_stats = self.plan(
+			action, plan_stats, elite_data = self.plan(
 				obs,
 				t0=t0,
 				eval_mode=eval_mode,
@@ -146,27 +147,37 @@ class TDMPC2(torch.nn.Module):
 				explore=explore,
 				explore_coef=torch.tensor(coef, device=self.device),
 			)
+			self._last_plan_metrics = {
+				'explore_coefficient': coef,
+				'explore_schedule_progress': schedule_progress(
+					explore_step,
+					self.cfg.explore_schedule_start,
+					self.cfg.explore_schedule_steps,
+				),
+				'planned_step': float(explore_step),
+				'planning_task_value_mean': plan_stats[0].item(),
+				'explore_reward_mean': plan_stats[1].item(),
+				'explore_reward_std': plan_stats[2].item(),
+				'explore_reward_max': plan_stats[3].item(),
+				'explore_return_mean': plan_stats[4].item(),
+				'explore_bonus_mean': plan_stats[5].item(),
+				'explore_bonus_task_ratio': plan_stats[6].item(),
+				'planning_total_value_mean': plan_stats[7].item(),
+			}
 			if explore:
 				reward_name = self.cfg.explore_reward
-				self._last_plan_metrics = {
-					'explore_coefficient': coef,
-					'explore_schedule_progress': schedule_progress(
-						explore_step,
-						self.cfg.explore_schedule_start,
-						self.cfg.explore_schedule_steps,
-					),
-					'planning_task_value_mean': plan_stats[0].item(),
-					'explore_reward_mean': plan_stats[1].item(),
-					'explore_reward_std': plan_stats[2].item(),
-					'explore_reward_max': plan_stats[3].item(),
-					f'{reward_name}_mean': plan_stats[1].item(),
-					f'{reward_name}_std': plan_stats[2].item(),
-					f'{reward_name}_max': plan_stats[3].item(),
-					'explore_return_mean': plan_stats[4].item(),
-					'explore_bonus_mean': plan_stats[5].item(),
-					'explore_bonus_task_ratio': plan_stats[6].item(),
-					'planning_total_value_mean': plan_stats[7].item(),
-				}
+				self._last_plan_metrics.update({
+					f'active_{reward_name}_mean': plan_stats[1].item(),
+					f'active_{reward_name}_std': plan_stats[2].item(),
+					f'active_{reward_name}_max': plan_stats[3].item(),
+				})
+			if diagnostics:
+				self._last_plan_metrics.update(self._plan_diagnostics(
+					obs,
+					elite_data,
+					task,
+					coef,
+				))
 			return action.cpu()
 		z = self.model.encode(obs, task)
 		action, info = self.model.pi(z, task)
@@ -177,21 +188,8 @@ class TDMPC2(torch.nn.Module):
 	@torch.no_grad()
 	def _exploration_reward(self, z, action, task):
 		"""Compute a planning-only exploration reward for state-action pairs."""
-		if self.cfg.explore_reward == 'q_bald':
-			q_logits = self.model.Q(z, action, task, return_type='all')
-			q_logits = q_logits[:self.cfg.q_bald_num_q]
-			return math.categorical_bald(q_logits).unsqueeze(-1)
-		if self.cfg.explore_reward == 'dynamics_bald':
-			next_z = self.model.next_mc(
-				z, action, task, self.cfg.dynamics_bald_samples
-			)
-			p = next_z.reshape(
-				self.cfg.dynamics_bald_samples,
-				next_z.shape[1],
-				-1,
-				self.cfg.simnorm_dim,
-			)
-			return math.categorical_bald(p, from_logits=False).mean(-1, keepdim=True)
+		if self.cfg.explore_reward in {'q_bald', 'dynamics_bald'}:
+			return self._bald_reward(self.cfg.explore_reward, z, action, task)
 		if self.cfg.explore_reward == 'noise':
 			return self.cfg.explore_noise_std * torch.randn(
 				z.shape[0], 1, device=z.device, dtype=z.dtype
@@ -217,9 +215,10 @@ class TDMPC2(torch.nn.Module):
 			if self.cfg.episodic:
 				termination = torch.clip(termination + (self.model.termination(z, task) > 0.5).float(), max=1.)
 		action, _ = self.model.pi(z, task)
-		task_value = task_return + discount * (1-termination) * self.model.Q(
+		terminal_q = discount * (1-termination) * self.model.Q(
 			z, action, task, return_type='avg'
 		)
+		task_value = task_return + terminal_q
 		explore_bonus = explore_coef * explore_return
 		total_value = task_value + explore_bonus
 		explore_rewards = torch.stack(explore_rewards)
@@ -233,7 +232,121 @@ class TDMPC2(torch.nn.Module):
 			explore_bonus.abs().mean() / (task_value.abs().mean() + 1e-8),
 			total_value.mean(),
 		])
-		return total_value, stats
+		return total_value, stats, task_return, terminal_q, explore_return
+
+	@torch.no_grad()
+	def _bald_reward(self, kind, z, action, task):
+		"""Compute a specific BALD signal independently of the active exploration mode."""
+		if kind == 'q_bald':
+			q_logits = self.model.Q(z, action, task, return_type='all')
+			return math.categorical_bald(
+				q_logits[:self.cfg.q_bald_num_q]
+			).unsqueeze(-1)
+		if kind == 'dynamics_bald':
+			next_z = self.model.next_mc(
+				z, action, task, self.cfg.dynamics_bald_samples
+			)
+			p = next_z.reshape(
+				self.cfg.dynamics_bald_samples,
+				next_z.shape[1],
+				-1,
+				self.cfg.simnorm_dim,
+			)
+			return math.categorical_bald(
+				p, from_logits=False
+			).mean(-1, keepdim=True)
+		raise ValueError(f'Unknown BALD diagnostic: {kind}')
+
+	@torch.no_grad()
+	def _plan_diagnostics(self, obs, elite_data, task, explore_coef):
+		"""Measure returns and uncertainty on final elites without changing planner RNG."""
+		(
+			elite_actions,
+			model_reward_return,
+			terminal_q,
+			active_explore_return,
+		) = elite_data
+		task_return = model_reward_return + terminal_q
+		task_scale = task_return.abs().mean()
+		active_ratio = (
+			explore_coef * active_explore_return
+		).abs().mean() / (task_scale + 1e-8)
+		metrics = {
+			'elite_model_reward_return_mean': model_reward_return.mean().item(),
+			'elite_terminal_q_mean': terminal_q.mean().item(),
+			'elite_task_return_mean': task_return.mean().item(),
+			'elite_task_return_std': task_return.std(unbiased=False).item(),
+			'active_explore_bonus_task_ratio': active_ratio.item(),
+		}
+		if not self.cfg.bald_diagnostics:
+			return metrics
+
+		devices = []
+		if self.device.type == 'cuda':
+			devices = [
+				self.device.index
+				if self.device.index is not None
+				else torch.cuda.current_device()
+			]
+		with torch.random.fork_rng(devices=devices):
+			z = self.model.encode(obs, task).repeat(self.cfg.num_elites, 1)
+			discount = 1.
+			termination = torch.zeros(
+				self.cfg.num_elites, 1, dtype=torch.float32, device=z.device
+			)
+			q_rewards, dynamics_rewards = [], []
+			q_return = torch.zeros_like(model_reward_return)
+			dynamics_return = torch.zeros_like(model_reward_return)
+			for t in range(self.cfg.horizon):
+				q_reward = self._bald_reward(
+					'q_bald', z, elite_actions[t], task
+				)
+				dynamics_reward = self._bald_reward(
+					'dynamics_bald', z, elite_actions[t], task
+				)
+				q_rewards.append(q_reward)
+				dynamics_rewards.append(dynamics_reward)
+				q_return = q_return + discount * (1-termination) * q_reward
+				dynamics_return = dynamics_return + discount * (1-termination) * dynamics_reward
+				z = self.model.next(z, elite_actions[t], task)
+				discount_update = self.discount[torch.tensor(task)] \
+					if self.cfg.multitask else self.discount
+				discount = discount * discount_update
+				if self.cfg.episodic:
+					termination = torch.clip(
+						termination + (self.model.termination(z, task) > 0.5).float(),
+						max=1.,
+					)
+
+		q_unit_ratio = q_return.abs().mean() / (task_scale + 1e-8)
+		dynamics_unit_ratio = dynamics_return.abs().mean() / (task_scale + 1e-8)
+
+		def suggested_coefficient(unit_ratio):
+			if unit_ratio.item() <= 1e-8:
+				return float('nan')
+			return self.cfg.plan_alignment_target / unit_ratio.item()
+
+		q_rewards = torch.stack(q_rewards)
+		dynamics_rewards = torch.stack(dynamics_rewards)
+		metrics.update({
+			'q_bald_mean': q_rewards.mean().item(),
+			'q_bald_std': q_rewards.std(unbiased=False).item(),
+			'q_bald_max': q_rewards.max().item(),
+			'q_bald_return_mean': q_return.mean().item(),
+			'q_bald_return_std': q_return.std(unbiased=False).item(),
+			'dynamics_bald_mean': dynamics_rewards.mean().item(),
+			'dynamics_bald_std': dynamics_rewards.std(unbiased=False).item(),
+			'dynamics_bald_max': dynamics_rewards.max().item(),
+			'dynamics_bald_return_mean': dynamics_return.mean().item(),
+			'dynamics_bald_return_std': dynamics_return.std(unbiased=False).item(),
+			'q_bald_unit_ratio': q_unit_ratio.item(),
+			'dynamics_bald_unit_ratio': dynamics_unit_ratio.item(),
+			'suggested_q_bald_coefficient': suggested_coefficient(q_unit_ratio),
+			'suggested_dynamics_bald_coefficient': suggested_coefficient(
+				dynamics_unit_ratio
+			),
+		})
+		return metrics
 
 	@torch.no_grad()
 	def _plan(self, obs, t0=False, eval_mode=False, task=None, explore=False, explore_coef=0.):
@@ -241,13 +354,16 @@ class TDMPC2(torch.nn.Module):
 		Plan a sequence of actions using the learned world model.
 
 		Args:
-			z (torch.Tensor): Latent state from which to plan.
+			obs (torch.Tensor): Observation from which to plan.
 			t0 (bool): Whether this is the first observation in the episode.
 			eval_mode (bool): Whether to use the mean of the action distribution.
 			task (Torch.Tensor): Task index (only used for multi-task experiments).
+			explore (bool): Whether exploration reward participates in ranking.
+			explore_coef (torch.Tensor): Planning-only exploration coefficient.
 
 		Returns:
-			torch.Tensor: Action to take in the environment.
+			Tuple containing the selected action, legacy planning statistics,
+			and final-elite trajectory data used by diagnostics.
 		"""
 		# Sample policy trajectories
 		z = self.model.encode(obs, task)
@@ -281,12 +397,21 @@ class TDMPC2(torch.nn.Module):
 				actions = actions * self.model._action_masks[task]
 
 			# Compute elite actions
-			value, plan_stats = self._estimate_value(
+			(
+				value,
+				plan_stats,
+				model_reward_return,
+				terminal_q,
+				active_explore_return,
+			) = self._estimate_value(
 				z, actions, task, explore, explore_coef
 			)
 			value = value.nan_to_num(0)
 			elite_idxs = torch.topk(value.squeeze(1), self.cfg.num_elites, dim=0).indices
 			elite_value, elite_actions = value[elite_idxs], actions[:, elite_idxs]
+			elite_model_reward_return = model_reward_return[elite_idxs]
+			elite_terminal_q = terminal_q[elite_idxs]
+			elite_active_explore_return = active_explore_return[elite_idxs]
 
 			# Update parameters
 			max_value = elite_value.max(0).values
@@ -306,7 +431,13 @@ class TDMPC2(torch.nn.Module):
 		if not eval_mode:
 			a = a + std * torch.randn(self.cfg.action_dim, device=std.device)
 		self._prev_mean.copy_(mean)
-		return a.clamp(-1, 1), plan_stats
+		elite_data = (
+			elite_actions,
+			elite_model_reward_return,
+			elite_terminal_q,
+			elite_active_explore_return,
+		)
+		return a.clamp(-1, 1), plan_stats, elite_data
 
 	def update_pi(self, zs, task):
 		"""

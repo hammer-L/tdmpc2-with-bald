@@ -15,29 +15,58 @@ class OnlineTrainer(Trainer):
 		self._ep_idx = 0
 		self._start_time = time()
 		self._plan_metric_sums = {}
-		self._plan_metric_count = 0
+		self._plan_metric_counts = {}
 		self._eval_reward_auc = 0.
 		self._last_eval_step = None
 		self._last_eval_reward = None
 
-	def _record_plan_metrics(self):
+	@staticmethod
+	def _accumulate_metrics(sums, counts, metrics):
+		"""Accumulate finite scalars with an independent count per metric."""
+		for key, value in metrics.items():
+			if torch.is_tensor(value):
+				value = value.item()
+			value = float(value)
+			if not np.isfinite(value):
+				continue
+			sums[key] = sums.get(key, 0.) + value
+			counts[key] = counts.get(key, 0) + 1
+
+	@staticmethod
+	def _mean_metrics(sums, counts):
+		"""Return per-key means for accumulated scalar metrics."""
+		return {
+			key: value / counts[key]
+			for key, value in sums.items()
+			if counts.get(key, 0) > 0
+		}
+
+	def _should_log_plan(self, planned_step):
+		"""Return whether this planning call should emit full diagnostics."""
+		return planned_step % self.cfg.plan_log_freq == 0
+
+	def _record_plan_metrics(self, log_plan=False):
 		"""Accumulate planning metrics for episode-level logging."""
 		if not self.agent.plan_metrics:
 			return
-		for key, value in self.agent.plan_metrics.items():
-			self._plan_metric_sums[key] = self._plan_metric_sums.get(key, 0.) + value
-		self._plan_metric_count += 1
+		self._accumulate_metrics(
+			self._plan_metric_sums,
+			self._plan_metric_counts,
+			self.agent.plan_metrics,
+		)
+		if log_plan:
+			self.logger.log_plan(self.agent.plan_metrics, self._step)
 
 	def _consume_plan_metrics(self):
 		"""Return episode means and reset planning metric accumulators."""
-		if self._plan_metric_count == 0:
+		if not self._plan_metric_counts:
 			return {}
-		metrics = {
-			key: value / self._plan_metric_count
-			for key, value in self._plan_metric_sums.items()
-		}
+		metrics = self._mean_metrics(
+			self._plan_metric_sums,
+			self._plan_metric_counts,
+		)
 		self._plan_metric_sums = {}
-		self._plan_metric_count = 0
+		self._plan_metric_counts = {}
 		return metrics
 
 	def common_metrics(self):
@@ -73,13 +102,29 @@ class OnlineTrainer(Trainer):
 	def eval(self):
 		"""Evaluate a TD-MPC2 agent."""
 		ep_rewards, ep_successes, ep_lengths, env_metrics = [], [], [], {}
+		plan_metric_sums, plan_metric_counts = {}, {}
+		eval_plan_idx = 0
+		planned_step = max(self._step - self.cfg.seed_steps - 1, 0)
 		for i in range(self.cfg.eval_episodes):
 			obs, done, ep_reward, t = self.env.reset(), False, 0, 0
 			if self.cfg.save_video:
 				self.logger.video.init(self.env, enabled=(i==0))
 			while not done:
 				torch.compiler.cudagraph_mark_step_begin()
-				action = self.agent.act(obs, t0=t==0, eval_mode=True)
+				diagnostics = self._should_log_plan(eval_plan_idx)
+				action = self.agent.act(
+					obs,
+					t0=t==0,
+					eval_mode=True,
+					step=planned_step,
+					diagnostics=diagnostics,
+				)
+				self._accumulate_metrics(
+					plan_metric_sums,
+					plan_metric_counts,
+					self.agent.plan_metrics,
+				)
+				eval_plan_idx += 1
 				obs, reward, done, info = self.env.step(action)
 				ep_reward += reward
 				t += 1
@@ -98,6 +143,7 @@ class OnlineTrainer(Trainer):
 			episode_length= np.nanmean(ep_lengths),
 		)
 		metrics.update({key: np.nanmean(values) for key, values in env_metrics.items()})
+		metrics.update(self._mean_metrics(plan_metric_sums, plan_metric_counts))
 		return metrics
 
 	def to_td(self, obs, action=None, reward=None, terminated=None):
@@ -160,8 +206,14 @@ class OnlineTrainer(Trainer):
 			# Collect experience
 			if self._step > self.cfg.seed_steps:
 				explore_step = self._step - self.cfg.seed_steps - 1
-				action = self.agent.act(obs, t0=len(self._tds)==1, step=explore_step)
-				self._record_plan_metrics()
+				diagnostics = self._should_log_plan(explore_step)
+				action = self.agent.act(
+					obs,
+					t0=len(self._tds)==1,
+					step=explore_step,
+					diagnostics=diagnostics,
+				)
+				self._record_plan_metrics(log_plan=diagnostics)
 			else:
 				action = self.env.rand_act()
 			obs, reward, done, info = self.env.step(action)
