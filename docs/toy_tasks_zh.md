@@ -216,6 +216,44 @@ train/explore_bonus_task_ratio
 
 优先选择该比例约为 `0.2` 的 coefficient，再比较 `eval/episode_reward_auc` 和全局目标成功率。
 
+也可以直接执行自动粗搜与细搜：
+
+```bash
+python scripts/search_exploration_coef.py \
+  --method both \
+  --override save_video=false
+```
+
+默认搜索范围：
+
+```text
+Q-BALD:        1e4, 1e5, 1e6
+dynamics-BALD: 1e3, 1e4, 1e5
+```
+
+脚本先跑三个对数尺度候选，再围绕粗搜最佳值补两个半 decade 邻点。它通过 wandb API 读取每个 run，在 coefficient 不低于峰值 80% 的区间计算 `plan/active_explore_bonus_task_ratio` 中位数：
+
+- 优先保留 ratio 位于 `[0.1, 0.4]` 的候选。
+- 在这些候选中先比较全局目标成功率，再比较 reward AUC。
+- 若没有候选进入目标区间，则选择 ratio 最接近 `0.2` 的候选。
+
+结果会输出到终端，并保存到：
+
+```text
+results/coef-search-<时间>.csv
+```
+
+只搜索一种方法或自定义网格：
+
+```bash
+python scripts/search_exploration_coef.py \
+  --method q_bald \
+  --q-peaks 10000 30000 100000 300000 \
+  --override save_video=false
+```
+
+使用 `--dry-run` 只打印命令，使用 `--coarse-only` 跳过第二阶段细搜。脚本默认从 `config.yaml` 读取 wandb project 和 entity，并要求当前环境已经完成 `wandb login`。
+
 执行完整 toy matrix：
 
 ```bash

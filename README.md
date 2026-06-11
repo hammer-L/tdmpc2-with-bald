@@ -147,10 +147,13 @@ See the [Chinese toy-task guide](docs/toy_tasks_zh.md) for environment details, 
 Run coefficient calibration, the complete 3-seed toy matrix, or standard-environment confirmation with:
 
 ```
+$ python scripts/search_exploration_coef.py --method both --override save_video=false
 $ python scripts/run_exploration_experiments.py --phase calibration --dry-run
 $ python scripts/run_exploration_experiments.py --phase toy --q-peak 1 --dynamics-peak 1 --noise-peak 1
 $ python scripts/run_exploration_experiments.py --phase confirm --method q_bald --q-peak 1
 ```
+
+`search_exploration_coef.py` performs a coarse logarithmic search followed by two half-decade refinement runs around the best candidate. It reads each run back through the wandb API, prefers coefficients whose peak bonus/task ratio is within `[0.1, 0.4]`, and then ranks them by global-goal success and reward AUC. Results are written to `results/coef-search-*.csv`.
 
 Remove `--dry-run` to execute calibration. Each method has its own peak argument because raw Q-BALD, dynamics-BALD, and noise are deliberately not normalized. Calibration tests `0.5x`, `1x`, and `2x` of the supplied peak. The toy matrix uses 30k steps and seeds 1, 2, and 3. Confirmation covers `MountainCarContinuous-v0` through `task=mountaincar-continuous episodic=true` and the existing `cartpole-swingup-sparse` task.
 
