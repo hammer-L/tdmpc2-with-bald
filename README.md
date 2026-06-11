@@ -142,6 +142,8 @@ Two dependency-free diagnostics are included:
 - `toy-bimodal`: linear dynamics with an easy broad local reward and a distant narrow global reward, intended for Q-BALD.
 - `toy-bimodal-dynamics`: the same reward landscape with deterministic nonlinear dynamics in the initially unvisited region, intended for dynamics-BALD.
 
+See the [Chinese toy-task guide](docs/toy_tasks_zh.md) for environment details, wandb videos, training commands, metrics, and experiment interpretation.
+
 Run coefficient calibration, the complete 3-seed toy matrix, or standard-environment confirmation with:
 
 ```

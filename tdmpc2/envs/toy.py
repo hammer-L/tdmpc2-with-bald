@@ -1,5 +1,6 @@
 import gymnasium as gym
 import numpy as np
+import torch
 
 from envs.wrappers.timeout import Timeout
 
@@ -101,18 +102,52 @@ class BimodalEnv(gym.Env):
 		return self._obs(), self._reward(), False, self._info()
 
 	def render(self):
-		height, width = 96, 384
-		frame = np.full((height, width, 3), 245, dtype=np.uint8)
+		height, width = 256, 640
+		frame = torch.full((height, width, 3), 245, dtype=torch.uint8)
 
 		def xcoord(position):
 			return int(np.clip((position + 1.5) / 3. * (width - 1), 0, width - 1))
 
-		frame[42:55, xcoord(-0.63):xcoord(-0.07)] = (190, 220, 245)
-		frame[37:60, xcoord(1.16):xcoord(1.24)] = (180, 230, 190)
-		frame[47:50, :] = (80, 80, 80)
+		def fill(y0, y1, x0, x1, color):
+			x0, x1 = max(0, x0), min(width, x1)
+			y0, y1 = max(0, y0), min(height, y1)
+			if x1 > x0 and y1 > y0:
+				frame[y0:y1, x0:x1] = torch.tensor(color, dtype=torch.uint8)
+
+		# Reward regions and the dynamics-shift region.
+		fill(95, 187, xcoord(-0.63), xcoord(-0.07), (191, 220, 246))
+		if self.dynamics_shift:
+			fill(72, 205, xcoord(0.25), width, (238, 229, 250))
+			for stripe in range(xcoord(0.25), width, 24):
+				fill(72, 205, stripe, stripe + 5, (224, 207, 241))
+		target_color = (53, 190, 108) if self._global_reached else (174, 225, 190)
+		fill(84, 198, xcoord(1.16), xcoord(1.24) + 1, target_color)
+
+		# Track and endpoint markers.
+		fill(144, 150, 24, width - 24, (72, 76, 82))
+		fill(132, 163, 22, 28, (72, 76, 82))
+		fill(132, 163, width - 28, width - 22, (72, 76, 82))
+
+		# Episode progress bar.
+		fill(24, 36, 32, width - 32, (218, 222, 226))
+		progress = min(max(self._t / self._episode_steps, 0.), 1.)
+		fill(24, 36, 32, 32 + int((width - 64) * progress), (65, 123, 210))
+
+		# Car body, wheels, and a velocity-direction indicator.
 		x = xcoord(self._position)
-		frame[34:63, max(0, x-4):min(width, x+5)] = (25, 25, 25)
-		return frame
+		car_color = (31, 156, 88) if self._global_reached else (35, 39, 45)
+		fill(116, 145, x - 17, x + 18, car_color)
+		fill(108, 122, x - 9, x + 10, car_color)
+		fill(143, 158, x - 14, x - 3, (18, 20, 23))
+		fill(143, 158, x + 4, x + 15, (18, 20, 23))
+		velocity_pixels = int(self._velocity / 0.11 * 52)
+		if velocity_pixels >= 0:
+			fill(102, 107, x, x + velocity_pixels, (225, 83, 70))
+			fill(97, 112, x + velocity_pixels - 4, x + velocity_pixels + 2, (225, 83, 70))
+		else:
+			fill(102, 107, x + velocity_pixels, x, (225, 83, 70))
+			fill(97, 112, x + velocity_pixels - 2, x + velocity_pixels + 4, (225, 83, 70))
+		return frame.cpu().numpy()
 
 
 def make_env(cfg):

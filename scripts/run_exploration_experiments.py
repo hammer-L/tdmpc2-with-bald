@@ -29,7 +29,6 @@ def command(task, method, schedule, peak, seed, steps, schedule_steps, exp_name)
 		'explore_peak_fraction=0.2',
 		'dynamics_dropout=0.1',
 		f'exp_name={exp_name}',
-		'save_video=false',
 	]
 	if task == 'mountaincar-continuous':
 		args.append('episodic=true')

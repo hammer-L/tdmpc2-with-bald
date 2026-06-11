@@ -80,7 +80,28 @@ class BimodalEnvTest(unittest.TestCase):
 
 	def test_render_shape(self):
 		env = BimodalEnv(seed=1)
-		self.assertEqual(env.render().shape, (96, 384, 3))
+		frame = env.render()
+		self.assertEqual(frame.shape, (256, 640, 3))
+		self.assertEqual(frame.dtype, np.uint8)
+
+	def test_render_changes_with_state(self):
+		env = BimodalEnv(seed=1)
+		before = env.render()
+		env.step(np.array([1.], dtype=np.float32))
+		after = env.render()
+		self.assertFalse(np.array_equal(before, after))
+
+	def test_dynamics_variant_has_visual_marker(self):
+		base = BimodalEnv(seed=1)
+		shifted = BimodalEnv(dynamics_shift=True, seed=1)
+		self.assertFalse(np.array_equal(base.render(), shifted.render()))
+
+	def test_success_changes_visual_state(self):
+		env = BimodalEnv(seed=1)
+		before = env.render()
+		env._global_reached = True
+		after = env.render()
+		self.assertFalse(np.array_equal(before, after))
 
 
 if __name__ == '__main__':
