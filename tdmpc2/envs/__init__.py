@@ -30,6 +30,10 @@ try:
 except:
 	make_mujoco_env = missing_dependencies
 try:
+	from envs.robotics import make_env as make_robotics_env
+except:
+	make_robotics_env = missing_dependencies
+try:
 	from envs.toy import make_env as make_toy_env
 except:
 	make_toy_env = missing_dependencies
@@ -69,7 +73,7 @@ def make_env(cfg):
 
 	else:
 		env = None
-		for fn in [make_toy_env, make_dm_control_env, make_maniskill_env, make_metaworld_env, make_myosuite_env, make_mujoco_env]:
+		for fn in [make_toy_env, make_dm_control_env, make_maniskill_env, make_metaworld_env, make_myosuite_env, make_mujoco_env, make_robotics_env]:
 			try:
 				env = fn(cfg)
 			except ValueError:

@@ -86,10 +86,24 @@ This codebase provides support for all **104** continuous control tasks from **D
 | myosuite  | myo-key-turn
 | myosuite  | myo-key-turn-hard
 | gymnasium | mountaincar-continuous
+| gymnasium-robotics | pointmaze-umaze
+| gymnasium-robotics | pointmaze-open
+| gymnasium-robotics | pointmaze-medium
+| gymnasium-robotics | pointmaze-large
 | toy | toy-bimodal
 | toy | toy-bimodal-dynamics
 
 which can be run by specifying the `task` argument for `evaluation.py`. Multi-task training and evaluation is specified by setting `task=mt80` or `task=mt30` for the 80-task and 30-task sets, respectively. While you generally do not need to access the underlying task IDs or embeddings during training or evaluation of our multi-task models, the mapping from task name to task embedding used in our work can be found [here](https://github.com/nicklashansen/tdmpc2/blob/7ec6bc83a82a5188ca3faddc59aea83f430ab570/tdmpc2/common/__init__.py#L26). As of April 2025, our codebase also provides basic support for other MuJoCo/Box2d Gymnasium tasks; refer to the `envs` directory for a list of tasks. It should be relatively straightforward to add support for custom tasks by following the examples in `envs`.
+
+PointMaze uses sparse rewards and a flattened state containing position,
+velocity, and desired goal. For example:
+
+```console
+$ python train.py task=pointmaze-umaze steps=500000
+```
+
+The environment reports goal success, final/minimum goal distance, time at
+the goal, and visited-cell coverage through the standard training metrics.
 
 **Note:** we also provide support for image observations in the DMControl tasks. Use argument `obs=rgb` if you wish to train visual policies.
 
