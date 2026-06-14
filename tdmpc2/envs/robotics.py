@@ -100,7 +100,14 @@ def make_env(cfg):
 		raise ValueError('Unknown task:', cfg.task)
 	assert cfg.obs == 'state', 'PointMaze tasks only support state observations.'
 
-	import gymnasium_robotics
+	try:
+		import gymnasium_robotics
+	except ImportError as exc:
+		raise ImportError(
+			'PointMaze requires Gymnasium-Robotics. Install it in the active '
+			'environment with: pip install "gymnasium==1.0.0" '
+			'"gymnasium-robotics==1.3.0"'
+		) from exc
 
 	if hasattr(gym, 'register_envs'):
 		gym.register_envs(gymnasium_robotics)

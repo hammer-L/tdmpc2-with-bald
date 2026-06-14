@@ -99,6 +99,7 @@ PointMaze uses sparse rewards and a flattened state containing position,
 velocity, and desired goal. For example:
 
 ```console
+$ pip install "gymnasium==1.0.0" "gymnasium-robotics==1.3.0"
 $ python train.py task=pointmaze-umaze steps=500000
 ```
 

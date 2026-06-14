@@ -10,11 +10,15 @@ try:
 	import gymnasium as gym
 	import numpy as np
 	from envs.robotics import PointMazeWrapper, make_env
+	from envs.wrappers.tensor import TensorWrapper
+	from envs.wrappers.timeout import Timeout
 except ImportError:
 	gym = None
 	np = None
 	PointMazeWrapper = None
 	make_env = None
+	TensorWrapper = None
+	Timeout = None
 
 
 if gym is not None:
@@ -88,6 +92,14 @@ class PointMazeWrapperTest(unittest.TestCase):
 		self.assertEqual(info['metric_goal_reached'], 1.)
 		self.assertEqual(info['metric_goal_distance'], 0.)
 		self.assertGreater(info['metric_state_coverage'], 0.)
+
+	def test_tensor_wrapper_exposes_episode_length(self):
+		env = PointMazeWrapper(
+			FakePointMaze(),
+			SimpleNamespace(seed=3),
+		)
+		env = TensorWrapper(Timeout(env, max_episode_steps=300))
+		self.assertEqual(env.max_episode_steps, 300)
 
 
 try:
